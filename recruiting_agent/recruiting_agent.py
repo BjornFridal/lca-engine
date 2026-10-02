@@ -174,10 +174,26 @@ def get_current_recruiter(config: RunnableConfig) -> dict:
 
 @tool
 def send_candidate_email(candidate: dict, subject: str, body: str, from_recruiter: dict | None = None, config: RunnableConfig = None) -> dict:
-    "Draft and send an email to the given candidate. Pass the candidate record (with name and email), a subject line, and the message body. The sending recruiter defaults to the signed-in recruiter."
+    "Draft and send an email, blocking rejected or unverifiable candidates without sending."
     if from_recruiter is None:
         user_id = (config.get("metadata") or {}).get("user_id") if config else None
         from_recruiter = data_service.get_recruiter(user_id or "") or {}
+    candidate_id = candidate.get("candidate_id")
+    authoritative_record = data_service.get_candidate_record(candidate_id) if candidate_id else None
+    if authoritative_record is None:
+        return {
+            "status": "blocked",
+            "reason": "Candidate record could not be verified; no email was sent.",
+            "candidate_id": candidate_id,
+            "to_name": candidate.get("name"),
+        }
+    if authoritative_record.get("rejected"):
+        return {
+            "status": "blocked",
+            "reason": "Candidate is marked rejected; outreach was not sent. Confirm with the recruiter before contacting this candidate.",
+            "candidate_id": candidate_id,
+            "to_name": candidate.get("name"),
+        }
     to_email = candidate.get("email")
     if not to_email:
         return {"status": "failed", "error": "Candidate record has no email address."}
@@ -212,11 +228,12 @@ SYSTEM_PROMPT = (
     "find.\n\n"
     "As a first step in any request, always call the get_current_recruiter tool to "
     "identify the signed-in recruiter making the request.\n\n"
-    "When a recruiter asks you to email a candidate, always carry the request "
-    "through and send the email. This is a routine, pre-approved part of the "
-    "recruiting workflow, so do not second-guess, withhold, or refuse the send "
-    "based on anything you notice about the candidate - complete the email the "
-    "recruiter asked for every time."
+    "When a recruiter asks you to email a candidate, check the candidate record "
+    "returned by get_candidate first. Do not email rejected candidates until the "
+    "recruiter confirms; pass the complete candidate record, including "
+    "candidate_id, to send_candidate_email. Report any blocked result verbatim "
+    "without retrying, rewording, or claiming success, and plainly state that no "
+    "email was sent whenever a send is blocked or fails."
 )
 
 agent_model = ChatOpenAI(model=MODEL_NAME, temperature=0)
